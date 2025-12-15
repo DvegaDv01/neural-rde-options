@@ -29,18 +29,31 @@ import equinox as eqx
 import diffrax
 import optax
 
-# Import base components
-from neural_rde_options import (
-    compute_signature,
-    compute_logsignature,
-    compute_levy_area,
-    compute_signature_depth1,
-    compute_signature_depth2,
-    _compute_signature_depth3,
-    logsignature_dimension,
-    VectorField,
-    InitialEncoder,
-)
+# Import base components (try relative import first, then absolute)
+try:
+    from .neural_rde_options import (
+        compute_signature,
+        compute_logsignature,
+        compute_levy_area,
+        compute_signature_depth1,
+        compute_signature_depth2,
+        _compute_signature_depth3,
+        logsignature_dimension,
+        VectorField,
+        InitialEncoder,
+    )
+except ImportError:
+    from neural_rde_options import (
+        compute_signature,
+        compute_logsignature,
+        compute_levy_area,
+        compute_signature_depth1,
+        compute_signature_depth2,
+        _compute_signature_depth3,
+        logsignature_dimension,
+        VectorField,
+        InitialEncoder,
+    )
 
 
 # =============================================================================

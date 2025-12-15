@@ -32,10 +32,39 @@ References:
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, NamedTuple
 from enum import Enum
 import warnings
+
+# Import preprocessing pipeline for end-to-end integration
+try:
+    # Try relative import first (when used as package)
+    from .cboe_preprocessing import (
+        PreprocessingConfig,
+        CBOEPathConstructor,
+        TrainingDataBuilder,
+        SmileParameters,
+        PathData,
+        compute_logsignature,
+    )
+    HAS_PREPROCESSING = True
+except ImportError:
+    try:
+        # Try absolute import (when running standalone)
+        from cboe_preprocessing import (
+            PreprocessingConfig,
+            CBOEPathConstructor,
+            TrainingDataBuilder,
+            SmileParameters,
+            PathData,
+            compute_logsignature,
+        )
+        HAS_PREPROCESSING = True
+    except ImportError:
+        HAS_PREPROCESSING = False
+        warnings.warn("CBOE preprocessing not available — trading pipeline will require manual inputs")
 
 
 # =============================================================================
@@ -1284,6 +1313,276 @@ def demonstrate_trading_framework():
 5. The LOG-SIGNATURE is OPTIMAL for timing these trades because option
    prices solve CDEs, and signatures capture all CDE-relevant path info.
 """)
+
+
+# =============================================================================
+# PART 5: TRADING PIPELINE - CONNECTS PREPROCESSING TO TRADING
+# =============================================================================
+
+@dataclass
+class TradingPipeline:
+    """
+    End-to-end trading pipeline: CBOE data → preprocessing → trading signals.
+    
+    This bridges the gap between data ingestion and trading decisions,
+    implementing the full Carr-Wu + Kidger framework.
+    
+    Usage:
+        pipeline = create_trading_pipeline()
+        decisions = pipeline.process_and_trade(cboe_df, forward=680.0, tau=1/252)
+    """
+    path_constructor: 'CBOEPathConstructor'
+    portfolio_constructor: CarrWuPortfolioConstructor
+    timing_engine: KidgerTimingEngine
+    strategy: CarrWuKidgerStrategy
+    config: 'PreprocessingConfig'
+    
+    # State for accumulating path
+    _accumulated_path: Optional[np.ndarray] = None
+    _current_logsig: Optional[np.ndarray] = None
+    
+    def reset(self):
+        """Reset accumulated state for new trading day."""
+        self._accumulated_path = None
+        self._current_logsig = None
+        self.path_constructor.reset()
+    
+    def update_path(self, path_point: np.ndarray) -> np.ndarray:
+        """
+        Add a new path point and recompute log-signature if needed.
+        
+        Args:
+            path_point: New observation (t, log_S, σ, J^S, J^I)
+            
+        Returns:
+            Current log-signature
+        """
+        if self._accumulated_path is None:
+            self._accumulated_path = path_point.reshape(1, -1)
+        else:
+            self._accumulated_path = np.vstack([self._accumulated_path, path_point])
+        
+        # Recompute log-signature if we have enough points
+        if len(self._accumulated_path) >= self.config.step_size:
+            # Use last step_size points for current log-signature
+            recent_path = self._accumulated_path[-self.config.step_size:]
+            self._current_logsig = compute_logsignature(recent_path, self.config.depth)
+        
+        return self._current_logsig
+    
+    def process_snapshot(
+        self,
+        cboe_df: pd.DataFrame
+    ) -> Tuple[np.ndarray, 'SmileParameters']:
+        """
+        Process a single CBOE snapshot.
+        
+        Args:
+            cboe_df: DataFrame with options chain data
+            
+        Returns:
+            Tuple of (path_point, smile_params)
+        """
+        path_point, smile_params = self.path_constructor.process_snapshot(cboe_df)
+        self.update_path(path_point)
+        return path_point, smile_params
+    
+    def generate_signals(
+        self,
+        smile_params: 'SmileParameters',
+        tau: float
+    ) -> Dict[TradeType, TimingSignal]:
+        """
+        Generate timing signals from current log-signature and smile.
+        
+        Args:
+            smile_params: Current smile parameters from options chain
+            tau: Time to maturity (years)
+            
+        Returns:
+            Dict mapping TradeType to TimingSignal
+        """
+        if self._current_logsig is None:
+            warnings.warn("No log-signature computed yet — need more path points")
+            return {}
+        
+        # Construct dummy portfolios for signal extraction
+        # (We just need the implied quantities, not full portfolios)
+        vol_port = CarrWuPortfolio(
+            trade_type=TradeType.VOL,
+            positions=[],
+            implied_variance=smile_params.atm_iv ** 2,
+            implied_skew=smile_params.gamma,  # γ is the skew coefficient
+            implied_smile=smile_params.omega2,  # ω² is the curvature
+            portfolio_delta=0.0,
+            portfolio_vega=0.0,
+            portfolio_cash_vega=0.0,
+            expected_gain_rate=0.0,
+            delta_hedge_shares=0.0,
+            vega_hedge_straddles=0.0
+        )
+        
+        skew_port = CarrWuPortfolio(
+            trade_type=TradeType.SKEW,
+            positions=[],
+            implied_variance=smile_params.atm_iv ** 2,
+            implied_skew=smile_params.gamma,
+            implied_smile=smile_params.omega2,
+            portfolio_delta=0.0,
+            portfolio_vega=0.0,
+            portfolio_cash_vega=0.0,
+            expected_gain_rate=0.0,
+            delta_hedge_shares=0.0,
+            vega_hedge_straddles=0.0
+        )
+        
+        smile_port = CarrWuPortfolio(
+            trade_type=TradeType.SMILE,
+            positions=[],
+            implied_variance=smile_params.atm_iv ** 2,
+            implied_skew=smile_params.gamma,
+            implied_smile=smile_params.omega2,
+            portfolio_delta=0.0,
+            portfolio_vega=0.0,
+            portfolio_cash_vega=0.0,
+            expected_gain_rate=0.0,
+            delta_hedge_shares=0.0,
+            vega_hedge_straddles=0.0
+        )
+        
+        return self.timing_engine.generate_all_signals(
+            self._current_logsig, vol_port, skew_port, smile_port, tau
+        )
+    
+    def process_and_trade(
+        self,
+        cboe_df: pd.DataFrame,
+        forward: float,
+        tau: float,
+        put_moneyness: float = 0.95,
+        call_moneyness: float = 1.05
+    ) -> List[TradingDecision]:
+        """
+        Complete pipeline: process CBOE snapshot and generate trading decisions.
+        
+        Args:
+            cboe_df: Single CBOE options snapshot DataFrame
+            forward: Current forward price
+            tau: Time to maturity (years)
+            put_moneyness: Put strike as fraction of forward (default 0.95 = 5% OTM)
+            call_moneyness: Call strike as fraction of forward (default 1.05 = 5% OTM)
+            
+        Returns:
+            List of TradingDecision objects
+        """
+        # 1. Process snapshot to get path point and smile
+        path_point, smile_params = self.process_snapshot(cboe_df)
+        
+        if self._current_logsig is None:
+            return []  # Need more data
+        
+        # 2. Derive strikes
+        atm_strike = forward
+        put_strike = forward * put_moneyness
+        call_strike = forward * call_moneyness
+        
+        # 3. Estimate wing IVs from smile parameters
+        # I² ≈ A² + 2γz_+ + ω²z_+z_-
+        # For 5% OTM: z_+ ≈ ±0.3 (roughly)
+        z_put = -0.3  # OTM put
+        z_call = 0.3  # OTM call
+        
+        atm_var = smile_params.atm_iv ** 2
+        put_var = atm_var + 2 * smile_params.gamma * z_put + smile_params.omega2 * z_put * (z_put - smile_params.atm_iv * np.sqrt(tau))
+        call_var = atm_var + 2 * smile_params.gamma * z_call + smile_params.omega2 * z_call * (z_call - smile_params.atm_iv * np.sqrt(tau))
+        
+        put_iv = np.sqrt(max(put_var, 0.01))  # Floor at 10% IV
+        call_iv = np.sqrt(max(call_var, 0.01))
+        
+        # 4. Generate trading decisions
+        decisions = self.strategy.generate_decisions(
+            forward=forward,
+            atm_strike=atm_strike,
+            put_strike=put_strike,
+            call_strike=call_strike,
+            atm_iv=smile_params.atm_iv,
+            put_iv=put_iv,
+            call_iv=call_iv,
+            tau=tau,
+            logsig=self._current_logsig
+        )
+        
+        return decisions
+
+
+def create_trading_pipeline(
+    config: Optional['PreprocessingConfig'] = None,
+    vol_threshold: float = 0.10,
+    skew_threshold: float = 0.005,
+    smile_threshold: float = 0.15,
+    risk_budget: float = 0.10,
+    min_confidence: float = 0.6
+) -> TradingPipeline:
+    """
+    Create a complete trading pipeline.
+    
+    This is the main entry point for end-to-end trading.
+    
+    Args:
+        config: Preprocessing configuration (uses defaults if None)
+        vol_threshold: Threshold for vol trade signals
+        skew_threshold: Threshold for skew trade signals  
+        smile_threshold: Threshold for smile trade signals
+        risk_budget: Fraction of capital to risk per trade
+        min_confidence: Minimum signal confidence to trade
+        
+    Returns:
+        TradingPipeline ready to process CBOE data
+        
+    Example:
+        >>> pipeline = create_trading_pipeline()
+        >>> for snapshot in cboe_snapshots:
+        ...     decisions = pipeline.process_and_trade(snapshot, forward=680.0, tau=1/252)
+        ...     for dec in decisions:
+        ...         print(f"{dec.trade_type}: {dec.action} with size {dec.position_size:.2%}")
+    """
+    if not HAS_PREPROCESSING:
+        raise ImportError(
+            "CBOE preprocessing module required for trading pipeline. "
+            "Ensure cboe_preprocessing.py is available."
+        )
+    
+    # Use default config if not provided
+    if config is None:
+        config = PreprocessingConfig(
+            step_size=8,
+            depth=2,
+            spot_jump_threshold=0.005,
+            vol_jump_threshold=0.02
+        )
+    
+    # Create components
+    path_constructor = CBOEPathConstructor(config)
+    portfolio_constructor = CarrWuPortfolioConstructor()
+    timing_engine = KidgerTimingEngine(
+        vol_threshold=vol_threshold,
+        skew_threshold=skew_threshold,
+        smile_threshold=smile_threshold
+    )
+    strategy = CarrWuKidgerStrategy(
+        portfolio_constructor=portfolio_constructor,
+        timing_engine=timing_engine,
+        risk_budget=risk_budget,
+        min_confidence=min_confidence
+    )
+    
+    return TradingPipeline(
+        path_constructor=path_constructor,
+        portfolio_constructor=portfolio_constructor,
+        timing_engine=timing_engine,
+        strategy=strategy,
+        config=config
+    )
 
 
 if __name__ == "__main__":

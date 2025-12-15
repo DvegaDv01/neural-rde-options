@@ -28,35 +28,103 @@ from typing import List, Dict, Tuple, Optional, Union
 from dataclasses import dataclass
 import warnings
 
-# Import the preprocessing pipeline
-from cboe_preprocessing import (
-    PreprocessingConfig,
-    CBOEPathConstructor,
-    TrainingDataBuilder,
-    OnlinePathProcessor,
-    PathData,
-    SmileParameters,
-    TrainingBatch,
-    compute_logsignature,
-    compute_levy_area,
-    logsig_dimension,
-    analyze_path_roughness,
-    recommend_hyperparameters
-)
-
-# Import Neural RDE components
+# Import the preprocessing pipeline (try relative import first, then absolute)
 try:
-    from neural_rde_options import (
-        NeuralRDEModel,
-        create_neural_rde_model,
-        NeuralRDEConfig,
-        train_step,
-        compute_loss
+    from .cboe_preprocessing import (
+        PreprocessingConfig,
+        CBOEPathConstructor,
+        TrainingDataBuilder,
+        OnlinePathProcessor,
+        PathData,
+        SmileParameters,
+        TrainingBatch,
+        compute_logsignature,
+        compute_levy_area,
+        logsig_dimension,
+        analyze_path_roughness,
+        recommend_hyperparameters
+    )
+except ImportError:
+    from cboe_preprocessing import (
+        PreprocessingConfig,
+        CBOEPathConstructor,
+        TrainingDataBuilder,
+        OnlinePathProcessor,
+        PathData,
+        SmileParameters,
+        TrainingBatch,
+        compute_logsignature,
+        compute_levy_area,
+        logsig_dimension,
+        analyze_path_roughness,
+        recommend_hyperparameters
+    )
+
+# Import Neural RDE components (base)
+try:
+    # Try relative import first (when used as package)
+    from .neural_rde_options import (
+        NeuralRDE,
+        train_model,
+        create_train_step,
+        total_loss,
+        logsignature_dimension,
+        compute_logsignature as jax_compute_logsignature,
+        compute_levy_area as jax_compute_levy_area,
+        SignatureGreeks,
+        decompose_pnl_signature,
     )
     HAS_NEURAL_RDE = True
 except ImportError:
-    HAS_NEURAL_RDE = False
-    warnings.warn("Neural RDE module not available for full integration")
+    try:
+        # Try absolute import (when running standalone)
+        from neural_rde_options import (
+            NeuralRDE,
+            train_model,
+            create_train_step,
+            total_loss,
+            logsignature_dimension,
+            compute_logsignature as jax_compute_logsignature,
+            compute_levy_area as jax_compute_levy_area,
+            SignatureGreeks,
+            decompose_pnl_signature,
+        )
+        HAS_NEURAL_RDE = True
+    except ImportError:
+        HAS_NEURAL_RDE = False
+        warnings.warn("Neural RDE module not available for full integration")
+
+# Import Enhanced Neural RDE components
+try:
+    from .enhanced_implementation import (
+        EnhancedNeuralRDE,
+        EnhancedOutputDecoder,
+        SignatureGreekMapping,
+        extract_greeks_from_signature,
+        compute_smile_formula_extended,
+        CarrWuBaseline,
+        compute_enhanced_total_loss,
+        augment_path_with_jump_indicators,
+        interpret_depth3_for_forecasting,
+    )
+    HAS_ENHANCED = True
+except ImportError:
+    try:
+        from enhanced_implementation import (
+            EnhancedNeuralRDE,
+            EnhancedOutputDecoder,
+            SignatureGreekMapping,
+            extract_greeks_from_signature,
+            compute_smile_formula_extended,
+            CarrWuBaseline,
+            compute_enhanced_total_loss,
+            augment_path_with_jump_indicators,
+            interpret_depth3_for_forecasting,
+        )
+        HAS_ENHANCED = True
+    except ImportError:
+        HAS_ENHANCED = False
+        warnings.warn("Enhanced implementation not available")
 
 # JAX imports
 try:
@@ -395,7 +463,9 @@ def prepare_neural_rde_inputs(dataset: CBOEDataset) -> Dict[str, np.ndarray]:
 
 def create_training_loop(
     dataset: CBOEDataset,
-    model_config: Optional[dict] = None
+    model_config: Optional[dict] = None,
+    use_enhanced: bool = True,
+    random_seed: int = 42
 ) -> Dict:
     """
     Create a complete training setup for Neural RDE.
@@ -406,8 +476,14 @@ def create_training_loop(
     3. Smile shape: E[(γ_pred - γ_mkt)² + (ω²_pred - ω²_mkt)²]
     4. Forecast accuracy: E[(σ²_pred - σ²_realized)²]"
     
+    Args:
+        dataset: CBOEDataset with preprocessed paths and targets
+        model_config: Optional model configuration overrides
+        use_enhanced: If True, use EnhancedNeuralRDE with jump indicators
+        random_seed: Random seed for model initialization
+        
     Returns:
-        Dict with model, optimizer state, loss function, and train step
+        Dict with model, inputs, config, and training utilities
     """
     if not HAS_NEURAL_RDE or not HAS_JAX:
         raise ImportError("Neural RDE module and JAX required for training")
@@ -418,19 +494,52 @@ def create_training_loop(
     # Default model configuration
     if model_config is None:
         model_config = {
-            'logsig_dim': inputs['logsignatures'].shape[-1],
             'hidden_dim': 64,
-            'n_layers': 3,
-            'output_dim': 10  # Greeks + smile params
+            'step_size': 8,
+            'depth': 2,
+            'mlp_width': 128,
+            'mlp_depth': 3,
         }
     
-    # Create model (this depends on your neural_rde_options implementation)
-    # model = create_neural_rde_model(**model_config)
+    # Initialize random key
+    key = jax.random.PRNGKey(random_seed)
+    
+    # Create model - use Enhanced if available and requested
+    if use_enhanced and HAS_ENHANCED:
+        # EnhancedNeuralRDE automatically adds jump indicators
+        model = EnhancedNeuralRDE(
+            input_dim=3,  # Base: (t, log_S, σ) — jump indicators added internally
+            hidden_dim=model_config.get('hidden_dim', 64),
+            step_size=model_config.get('step_size', 8),
+            depth=model_config.get('depth', 2),
+            mlp_width=model_config.get('mlp_width', 128),
+            mlp_depth=model_config.get('mlp_depth', 3),
+            use_jump_indicators=True,
+            key=key
+        )
+        loss_fn = compute_enhanced_total_loss
+    else:
+        # Base NeuralRDE
+        logsig_dim = inputs['logsignatures'].shape[-1]
+        model = NeuralRDE(
+            input_dim=5,  # (t, log_S, σ, J^S, J^I)
+            hidden_dim=model_config.get('hidden_dim', 64),
+            logsig_dim=logsig_dim,
+            step_size=model_config.get('step_size', 8),
+            depth=model_config.get('depth', 2),
+            mlp_width=model_config.get('mlp_width', 128),
+            mlp_depth=model_config.get('mlp_depth', 3),
+            key=key
+        )
+        loss_fn = total_loss
     
     return {
+        'model': model,
         'inputs': inputs,
         'config': model_config,
-        'dataset': dataset
+        'dataset': dataset,
+        'loss_fn': loss_fn,
+        'use_enhanced': use_enhanced and HAS_ENHANCED
     }
 
 

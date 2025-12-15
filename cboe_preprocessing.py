@@ -781,11 +781,8 @@ class TrainingDataBuilder:
         calls = last_df[(last_df['dte'] == 0) & (last_df[cfg.option_type_column] == 'C')]
         
         for i, K in enumerate(target_strikes):
-            if len(calls) > 0:
-                closest_idx = (calls[cfg.strike_column] - K).abs().idxmin()
-                target_iv[i] = calls.loc[closest_idx, cfg.iv_column]
-            else:
-                target_iv[i] = atm_iv
+            closest_idx = (calls[cfg.strike_column] - K).abs().idxmin()
+            target_iv[i] = calls.loc[closest_idx, cfg.iv_column] if len(calls) > 0 else atm_iv
         
         # Extract smile parameters from last snapshot
         smile_params = self.path_constructor.extract_smile_parameters(
@@ -1010,88 +1007,46 @@ def recommend_hyperparameters(
 # PART 7: DEMONSTRATION
 # =============================================================================
 
-def load_cboe_data(data_dir: str = 'data') -> List[pd.DataFrame]:
-    """
-    Load real CBOE options data from CSV files.
-
-    Args:
-        data_dir: Directory containing CBOE CSV files
-
-    Returns:
-        List of DataFrames, one per snapshot, sorted by timestamp
-    """
-    import os
-    import glob
-
-    # Find all CSV files in data directory
-    pattern = os.path.join(data_dir, '*.csv')
-    files = sorted(glob.glob(pattern))
-
-    if not files:
-        raise FileNotFoundError(f"No CSV files found in {data_dir}/")
-
-    snapshots = []
-    for f in files:
-        df = pd.read_csv(f)
-        snapshots.append(df)
-
-    return snapshots
-
-
 def demo_preprocessing_pipeline():
     """
-    Demonstrate the preprocessing pipeline with real CBOE data.
+    Demonstrate the preprocessing pipeline with sample data.
     """
     print("=" * 70)
     print("Kidger's Data Preprocessing Pipeline - Demonstration")
     print("=" * 70)
-
-    # Load real CBOE data
-    try:
-        snapshots = load_cboe_data('data')
-        print(f"\nLoaded {len(snapshots)} real CBOE snapshots from data/")
-
-        # Display data info
-        first_df = snapshots[0]
-        spot = first_df['active_underlying_price'].iloc[0]
-        timestamp = first_df['quote_datetime'].iloc[0]
-        underlying = first_df['underlying_symbol'].iloc[0]
-        n_options = len(first_df)
-
-        print(f"   Underlying: {underlying}")
-        print(f"   Date/Time: {timestamp}")
-        print(f"   Spot Price: ${spot:.2f}")
-        print(f"   Options per snapshot: {n_options}")
-
-    except FileNotFoundError:
-        print("\nNo real data found in data/ directory. Using synthetic data.")
-        # Fallback to synthetic data
-        np.random.seed(42)
-
-        def create_sample_snapshot(timestamp: str, spot: float) -> pd.DataFrame:
-            n_options = 100
-            strikes = spot * np.linspace(0.9, 1.1, n_options)
-            return pd.DataFrame({
-                'underlying_symbol': 'SPY',
-                'quote_datetime': timestamp,
-                'expiration': '2025-12-01',
-                'strike': strikes,
-                'option_type': ['C' if i % 2 == 0 else 'P' for i in range(n_options)],
-                'active_underlying_price': spot,
-                'implied_volatility': 0.2 + 0.1 * ((strikes - spot) / spot)**2,
-                'delta': 0.5 * np.sign(strikes - spot),
-                'gamma': 0.1 * np.exp(-((strikes - spot) / spot)**2),
-                'theta': -0.1,
-                'vega': 0.3,
-                'bid': 1.0,
-                'ask': 1.1,
-                'trade_volume': np.random.randint(0, 100, n_options),
-                'open_interest': np.random.randint(100, 10000, n_options)
-            })
-
-        spots = [681.45, 680.98, 680.91]
-        timestamps = ['2025-12-01 10:00:00', '2025-12-01 10:05:00', '2025-12-01 10:10:00']
-        snapshots = [create_sample_snapshot(t, s) for t, s in zip(timestamps, spots)]
+    
+    # Create sample data (simulating 3 CBOE snapshots)
+    np.random.seed(42)
+    
+    def create_sample_snapshot(timestamp: str, spot: float) -> pd.DataFrame:
+        """Create a sample CBOE-like snapshot."""
+        n_options = 100
+        strikes = spot * np.linspace(0.9, 1.1, n_options)
+        
+        df = pd.DataFrame({
+            'underlying_symbol': 'SPY',
+            'quote_datetime': timestamp,
+            'expiration': '2025-12-01',
+            'strike': strikes,
+            'option_type': ['C' if i % 2 == 0 else 'P' for i in range(n_options)],
+            'active_underlying_price': spot,
+            'implied_volatility': 0.2 + 0.1 * ((strikes - spot) / spot)**2,
+            'delta': 0.5 * np.sign(strikes - spot),
+            'gamma': 0.1 * np.exp(-((strikes - spot) / spot)**2),
+            'theta': -0.1,
+            'vega': 0.3,
+            'bid': 1.0,
+            'ask': 1.1,
+            'trade_volume': np.random.randint(0, 100, n_options),
+            'open_interest': np.random.randint(100, 10000, n_options)
+        })
+        return df
+    
+    # Simulate intraday evolution
+    spots = [681.45, 680.98, 680.91]  # Declining price
+    timestamps = ['2025-12-01 10:00:00', '2025-12-01 10:05:00', '2025-12-01 10:10:00']
+    
+    snapshots = [create_sample_snapshot(t, s) for t, s in zip(timestamps, spots)]
     
     # Initialize pipeline
     config = PreprocessingConfig(

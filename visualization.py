@@ -416,17 +416,12 @@ def plot_levy_area_analysis(
     # Bottom right: Lévy area vs subsequent return
     returns = np.diff(log_S)
     subsequent_returns = returns[window_size:]
-
-    # Align arrays to same length
-    n_points = min(len(levy_areas) - 1, len(subsequent_returns))
-    levy_for_plot = levy_areas[:n_points]
-    returns_for_plot = subsequent_returns[:n_points]
-
+    
     ax4 = axes[1, 1]
-    ax4.scatter(levy_for_plot, returns_for_plot, alpha=0.3, s=5)
-
+    ax4.scatter(levy_areas[:-1], subsequent_returns[:-1], alpha=0.3, s=5)
+    
     # Fit trend line
-    z = np.polyfit(levy_for_plot, returns_for_plot, 1)
+    z = np.polyfit(levy_areas[:-1], subsequent_returns[:-1], 1)
     p = np.poly1d(z)
     x_fit = np.linspace(np.min(levy_areas), np.max(levy_areas), 100)
     ax4.plot(x_fit, p(x_fit), 'r-', linewidth=2, label=f'Slope: {z[0]:.6f}')
