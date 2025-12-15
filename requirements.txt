@@ -23,5 +23,11 @@ matplotlib>=3.7.0
 # Progress bars (optional)
 tqdm>=4.65.0
 
+# Data loading and processing
+pandas>=2.0.0
+
+# AWS S3 access (for historical data)
+boto3>=1.28.0
+
 # For GPU support (optional, uncomment if using GPU):
 # jax[cuda12_pip]>=0.4.20 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html

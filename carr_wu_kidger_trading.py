@@ -1,28 +1,4 @@
 """
-Carr-Wu Meets Kidger: A Dialogue on Vol, Skew, and Smile Trading
-================================================================
-
-"The log-signature provides the optimal summary for predicting how paths drive
-differential equations. Option prices ARE solutions to differential equations.
-Therefore, the log-signature is optimal for option trading."
-    — Kidger's perspective
-
-"We show that three-strike portfolios isolate pure bets on variance, covariance,
-and vol-of-vol. The mean gain depends on the difference between INSTANTANEOUS
-and IMPLIED quantities."
-    — Carr-Wu (2023)
-
-THE SYNTHESIS:
-- Carr-Wu show WHAT to trade (vol, skew, smile portfolios)
-- Kidger shows WHEN to trade (log-signature timing signals)
-- Together: A complete framework for systematic options trading
-
-This module implements:
-1. The theoretical dialogue between the two perspectives
-2. Portfolio construction following Carr-Wu (2023)
-3. Timing signals from Neural RDE log-signatures
-4. Backtesting framework for the combined strategy
-
 References:
 - Al-Jaaf & Carr (2023) "Vol, Skew, and Smile Trading", J. Derivatives
 - Kidger et al. (2021) "Neural Rough Differential Equations"
@@ -65,308 +41,6 @@ except ImportError:
     except ImportError:
         HAS_PREPROCESSING = False
         warnings.warn("CBOE preprocessing not available — trading pipeline will require manual inputs")
-
-
-# =============================================================================
-# THE DIALOGUE: CARR-WU AND KIDGER ON OPTIONS TRADING
-# =============================================================================
-
-DIALOGUE = """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║         CARR-WU AND KIDGER: A DIALOGUE ON OPTIONS TRADING                    ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-SETTING: A whiteboard covered in Greek letters and integral signs.
-
-════════════════════════════════════════════════════════════════════════════════
-PART 1: THE VOL TRADE
-════════════════════════════════════════════════════════════════════════════════
-
-CARR-WU: "Consider an ATM straddle, normalized by cash gamma. Its mean gain 
-rate under Q is remarkably simple:"
-
-    G_t^vol = σ_t² - I_at²
-
-"That's it. The instantaneous variance minus the squared ATM implied vol.
-When σ_t² > I_at², you profit. When σ_t² < I_at², you lose."
-
-KIDGER: "But how do you know when σ_t² > I_at²? You can observe I_at from the
-market, but σ_t is UNOBSERVABLE."
-
-CARR-WU: "Exactly! That's why vol trading has a negative Sharpe ratio over
-time — you're paying for protection against variance spikes."
-
-KIDGER: "But the log-signature can FORECAST σ_t². Look at the depth-2 term
-S^(log_S, log_S). This is the iterated integral ∫∫ d(log S) d(log S), which
-approximates realized variance over the interval. It's a PREDICTOR."
-
-CARR-WU: "Interesting. So you're saying we can time the vol trade?"
-
-KIDGER: "Precisely. When S^(log_S, log_S) is elevated relative to I_at²,
-enter the long straddle. The log-signature gives us a LEADING indicator."
-
-    TIMING SIGNAL (Vol Trade):
-    ─────────────────────────
-    Signal = S^(log_S, log_S) / (I_at² × τ) - 1
-    
-    If Signal > threshold: GO LONG straddle (expect realized > implied)
-    If Signal < -threshold: GO SHORT straddle (expect realized < implied)
-
-
-════════════════════════════════════════════════════════════════════════════════
-PART 2: THE SKEW TRADE (Where Kidger's Framework Shines)
-════════════════════════════════════════════════════════════════════════════════
-
-CARR-WU: "The skew trade is a normalized risk-reversal. Long OTM call, short
-OTM put, with positions sized by cash gamma. The mean gain rate is:"
-
-    G_t^skew = γ_t - b_t
-
-"Where γ_t = σ_t × ρ_t × ω_t is the instantaneous covariation of log-price
-with log-IV, and b_t is the implied skew from the smile slope."
-
-KIDGER: "THIS is where path-dependence matters most! Your γ_t is an 
-INSTANTANEOUS covariation. But my Lévy area captures the CUMULATIVE pattern:"
-
-    A^(log_S, σ) = S^(log_S, σ) - S^(σ, log_S)
-
-"This Lévy area tells you something γ_t alone cannot: the ORDER of moves."
-
-CARR-WU: "What do you mean by 'order of moves'?"
-
-KIDGER: "Consider two scenarios over an interval:
-
-    Scenario A: Price drops 2%, THEN vol spikes 3%
-    Scenario B: Vol spikes 3%, THEN price drops 2%
-
-Both have the same γ_t on average. But the Lévy areas differ:
-
-    Scenario A: A^(log_S, σ) > 0  (price led vol — classic leverage effect)
-    Scenario B: A^(log_S, σ) < 0  (vol led price — anticipatory hedging)
-
-For your SKEW TRADE, this distinction matters enormously!"
-
-CARR-WU: "How so?"
-
-KIDGER: "In Scenario A, the put buyer was PROTECTED — the vol spike came after
-their delta loss, so their vega gain partially offset it. The smile should
-steepen to reflect this protection value.
-
-In Scenario B, the put buyer got CRUSHED — vol spiked first (increasing their
-premium), then price dropped (delta loss), then vol might have even reverted.
-The smile should flatten because the 'protection' was illusory."
-
-CARR-WU: "So the Lévy area is a PREDICTIVE signal for smile dynamics?"
-
-KIDGER: "Exactly! 
-
-    TIMING SIGNAL (Skew Trade):
-    ───────────────────────────
-    Signal = A^(log_S, σ) / √τ - b_t
-    
-    If Signal > threshold: GO LONG risk-reversal (expect γ > b)
-    If Signal < -threshold: GO SHORT risk-reversal (expect γ < b)
-
-The Lévy area forecasts γ_{t+1} because path-dependent patterns PERSIST.
-This is why your empirical Sharpe ratio for skew trades is 1.38 at 1-month —
-the market doesn't fully price in the path-dependent information!"
-
-
-════════════════════════════════════════════════════════════════════════════════
-PART 3: THE SMILE TRADE
-════════════════════════════════════════════════════════════════════════════════
-
-CARR-WU: "The smile trade is a normalized butterfly: long strangle, short
-2 ATM straddles. The mean gain rate is:"
-
-    G_t^smile = ω_t² - c_t
-
-"Where ω_t² is the instantaneous variance of log-IV, and c_t is the implied
-smile curvature."
-
-KIDGER: "And the timing signal comes from S^(σ, σ) — the vol-of-vol proxy
-from the log-signature:"
-
-    TIMING SIGNAL (Smile Trade):
-    ────────────────────────────
-    Signal = S^(σ, σ) / (c_t × τ) - 1
-    
-    If Signal > threshold: GO LONG butterfly (expect vol-of-vol > curvature)
-    If Signal < -threshold: GO SHORT butterfly
-
-"But there's MORE. The depth-3 term S^(σ, σ, σ) captures SKEWNESS of IV moves.
-When this is large and negative, you're in a 'vol crash' regime — the smile
-will flatten. When it's large and positive, you're in a 'vol spike' regime —
-the smile will steepen."
-
-
-════════════════════════════════════════════════════════════════════════════════
-PART 4: THE UNIFIED FRAMEWORK
-════════════════════════════════════════════════════════════════════════════════
-
-KIDGER: "Let me state the unified framework precisely. Define the augmented
-path X_t = (t, log S_t, σ_t). Then:"
-
-    Your G_t^vol  depends on dX^(1) through S^(log_S, log_S)
-    Your G_t^skew depends on dX^(1,2) through A^(log_S, σ)  
-    Your G_t^smile depends on dX^(2,2) through S^(σ, σ)
-
-"The LOG-SIGNATURE is the minimal sufficient statistic for these forecasts.
-Any other predictor can be written as a function of the log-signature."
-
-CARR-WU: "This is the Universal Approximation Theorem for path functionals?"
-
-KIDGER: "Exactly. And for OPTIONS specifically, the signature is optimal 
-because option prices solve controlled differential equations (the pricing 
-PDE). The Chen-Strichartz theorem guarantees the signature captures all
-path-dependent information relevant to CDE solutions."
-
-CARR-WU: "So in practice, how would you trade?"
-
-KIDGER: "Here's the systematic approach:
-
-    1. COMPUTE log-signatures from 5-minute CBOE data over step_size intervals
-    
-    2. EXTRACT timing signals:
-       - Vol signal   = f(S^(1,1), S^(0,1)) vs I_at²
-       - Skew signal  = f(A^(1,2)) vs b_t  
-       - Smile signal = f(S^(2,2), S^(2,2,2)) vs c_t
-    
-    3. CONSTRUCT Carr-Wu portfolios when signals exceed thresholds:
-       - Vol:   η_a = 2/($Γ_a) ATM straddles
-       - Skew:  η_c = 1/((ℓ_+^c - ℓ_+^p)$Γ_c) calls, η_p = -... puts
-       - Smile: η_c = η_p = 1/(ℓ̄²$Γ), η_a = -2/(ℓ̄²$Γ_a)
-    
-    4. DELTA-HEDGE and VEGA-HEDGE as Carr-Wu specify
-    
-    5. EXIT when signals reverse or at fixed horizon"
-
-CARR-WU: "What Sharpe ratios do you expect?"
-
-KIDGER: "Your paper shows unconditional Sharpes of 0.42/1.38/0.89 for vol/skew/
-smile at 1-month maturity. With timing signals, I estimate:
-
-    Vol trade:   0.42 → 0.65 (+55% improvement)
-    Skew trade:  1.38 → 1.85 (+34% improvement)  
-    Smile trade: 0.89 → 1.20 (+35% improvement)
-
-The improvement is largest for vol because realized variance is most 
-forecastable from recent path behavior. Skew already has high Sharpe because
-path-dependence (which we now exploit more fully) was partially priced in."
-
-
-════════════════════════════════════════════════════════════════════════════════
-PART 5: WHY SHORT-DATED OPTIONS?
-════════════════════════════════════════════════════════════════════════════════
-
-CARR-WU: "Our empirical results show Sharpe ratios are highest at 1-month 
-maturity and decline with tenor. Why?"
-
-KIDGER: "Two reasons:
-
-1. PATH-DEPENDENCE DOMINATES AT SHORT HORIZONS
-   
-   For long-dated options, the Central Limit Theorem kicks in. The distribution
-   of terminal values approaches Gaussian, and path-dependent effects wash out.
-   
-   For short-dated options, individual path realizations matter. The Lévy area
-   term ξE[A(X)] in the extended smile formula is LARGE for τ < 1 month and
-   negligible for τ > 6 months.
-
-2. FORECASTING ACCURACY DECAYS WITH HORIZON
-   
-   The log-signature captures recent path behavior. Its predictive power for
-   σ²_{t+Δ}, γ_{t+Δ}, ω²_{t+Δ} decays as Δ increases.
-   
-   At 1-month horizon, log-signatures forecast well.
-   At 12-month horizon, we're essentially forecasting noise.
-
-This is why your Table 4 shows declining Sharpes with maturity — it's not
-just a risk premium story, it's a FORECASTABILITY story."
-
-
-════════════════════════════════════════════════════════════════════════════════
-PART 6: THE CAPM PUZZLE
-════════════════════════════════════════════════════════════════════════════════
-
-CARR-WU: "Our Table 8 shows that CAPM explains vol trade returns but NOT skew
-or smile trade returns. The alphas remain significant. Why?"
-
-KIDGER: "Because skew and smile trades capture PATH-DEPENDENT risk premia that
-are orthogonal to market beta.
-
-The vol trade's return is correlated with market returns — when the market
-drops, realized vol spikes, so the vol trade loses (if short protection).
-CAPM captures this systematic exposure.
-
-But the skew trade captures the SEQUENCING of price and vol moves, which has
-no systematic market exposure. The Lévy area A^(log_S, σ) is nearly 
-uncorrelated with market returns. It's a pure alpha source.
-
-Similarly, the smile trade captures vol-of-vol risk, which is orthogonal to
-both market returns and volatility level. It's another pure alpha source.
-
-This is exactly what your Table 7 correlation matrix shows — the skew and
-smile trade returns have near-zero correlation with market returns."
-
-
-════════════════════════════════════════════════════════════════════════════════
-PART 7: THE EXTENDED SMILE FORMULA
-════════════════════════════════════════════════════════════════════════════════
-
-CARR-WU: "You mentioned extending our smile formula. Can you be precise?"
-
-KIDGER: "Your formula is:
-    
-    I² - A² = 2γz_+ + ω²z_+z_-
-
-I extend it to:
-
-    I² - A² = 2γz_+ + ω²z_+z_- + ξ·E[A(X)]
-
-Where:
-- ξ is a learned coefficient (typically O(1) for short-dated)
-- E[A(X)] is the expected Lévy area from the Neural RDE
-
-This third term explains:
-1. Why short-dated smiles are steeper than Carr-Wu predicts
-2. Why smile steepness depends on recent PATH PATTERNS, not just current σ
-3. Why smiles evolve differently after jumps vs. continuous moves
-
-The Neural RDE learns ξ and the mapping from log-signature to E[A(X)]."
-
-CARR-WU: "Does this help with hedging?"
-
-KIDGER: "Yes! Your paper correctly identifies delta-hedging and vega-hedging.
-But for short-dated options, you need a THIRD hedge: the Lévy area hedge.
-
-    Hedge ratio for Lévy area = ∂V/∂A × dA/dt
-
-This captures the P&L from changes in path-dependent smile effects. Without
-it, your smile trade has UNEXPLAINED P&L variance. With it, you get cleaner
-exposure to pure ω² vs. c_t differences."
-
-════════════════════════════════════════════════════════════════════════════════
-CONCLUSION
-════════════════════════════════════════════════════════════════════════════════
-
-CARR-WU: "So to summarize our dialogue..."
-
-KIDGER: "We've shown that:
-
-1. Carr-Wu's three trades (vol, skew, smile) isolate pure exposure to σ², γ, ω²
-2. Log-signatures provide OPTIMAL timing signals for entering these trades
-3. The Lévy area term extends the smile formula for short-dated options
-4. The combined framework explains why short-dated options have highest Sharpe
-5. CAPM fails for skew/smile because they capture path-dependent risk premia
-
-The practical implication: Systematic options trading should use Neural RDE
-log-signatures to TIME entries into Carr-Wu portfolio constructions."
-
-CARR-WU: "The math is beautiful. The profits are real. Let's trade."
-
-╚══════════════════════════════════════════════════════════════════════════════╝
-"""
 
 
 # =============================================================================
@@ -719,9 +393,6 @@ class CarrWuPortfolioConstructor:
 class TimingSignal:
     """
     Timing signal from log-signature analysis.
-    
-    Positive signal → expect instantaneous > implied → go LONG the Carr-Wu trade
-    Negative signal → expect instantaneous < implied → go SHORT the Carr-Wu trade
     """
     trade_type: TradeType
     signal_value: float
@@ -1034,6 +705,703 @@ class TradingDecision:
     expected_sharpe: float         # Expected Sharpe from historical analysis
 
 
+# =============================================================================
+# PART 4B: COMPREHENSIVE TRADE REPORT SYSTEM
+# =============================================================================
+
+@dataclass
+class GreeksSnapshot:
+    """
+    Portfolio Greeks at entry time.
+    
+    From Carr-Wu, all Greeks can be expressed as multiples of cash gamma:
+    - Cash Vega = $Γ × σ²τ  (Eq. 11)
+    - Cash Vanna = $Γ × ℓ₊  (Eq. 15)
+    - Cash Volga = $Γ × ℓ₋ℓ₊ (Eq. 13)
+    - Theta = -$Γ × I²/2  (Eq. 16)
+    """
+    delta: float              # Portfolio delta (shares to hedge)
+    gamma: float              # Portfolio gamma (convexity)
+    vega: float               # Portfolio vega (vol sensitivity)
+    theta: float              # Daily theta in dollars
+    vanna: float              # dDelta/dVol = dVega/dSpot
+    volga: float              # dVega/dVol (vol convexity)
+    cash_gamma: float         # $Γ = F² × Γ
+    cash_vega: float          # $V = σ × Vega
+    
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            'delta': self.delta,
+            'gamma': self.gamma,
+            'vega': self.vega,
+            'theta': self.theta,
+            'vanna': self.vanna,
+            'volga': self.volga,
+            'cash_gamma': self.cash_gamma,
+            'cash_vega': self.cash_vega
+        }
+
+
+@dataclass  
+class VolatilityView:
+    """
+    Volatility posture of the trade.
+    
+    Each Carr-Wu trade isolates one volatility dimension:
+    - Vol trade: bets on σ² vs I²
+    - Skew trade: bets on γ vs b (implied slope)
+    - Smile trade: bets on ω² vs c (implied curvature)
+    """
+    vol_posture: str          # 'LONG', 'SHORT', 'NEUTRAL'
+    skew_posture: str         # 'LONG', 'SHORT', 'NEUTRAL'
+    smile_posture: str        # 'LONG', 'SHORT', 'NEUTRAL'
+    
+    # Key parameters
+    implied_param: float      # I², b, or c depending on trade
+    realized_param: float     # σ², γ, or ω² from log-signature
+    edge: float               # realized - implied (the trading edge)
+    
+    # Descriptive
+    param_name: str           # 'variance', 'skew', 'smile'
+    bet_description: str      # Human-readable description
+
+
+@dataclass
+class PnLScenario:
+    """
+    P&L estimate under a specific market scenario.
+    
+    Using Carr-Wu P&L attribution (Eq. 47):
+    dP&L ≈ Δ×dS + ½Γ×dS² + V×dσ + Θ×dt + Vanna×dS×dσ + ½Volga×dσ²
+    
+    Extended with Kidger's Libra term for path-dependence:
+    dP&L += Libra × Lévy_Area
+    """
+    name: str
+    spot_move_pct: float      # Percentage move in spot
+    iv_move_vol: float        # Move in IV (in vol points, e.g., 0.02 = 2 vol)
+    time_days: float          # Time horizon in days
+    estimated_pnl: float      # Estimated P&L in dollars
+    pnl_pct: float            # P&L as percentage of position
+    explanation: str          # Brief explanation
+
+
+@dataclass
+class EntryTiming:
+    """
+    Entry timing guidance from log-signature analysis.
+    
+    Signal decay: Log-signature signals have finite half-life because
+    the path summary becomes stale as new information arrives.
+    """
+    signal_strength: float        # Current strength (0-1)
+    signal_age_minutes: float     # Time since signal generated
+    signal_half_life_minutes: float  # Time for signal to decay 50%
+    entry_window_minutes: float   # Window before signal becomes stale
+    optimal_entry: str            # 'NOW', 'WAIT', 'MISSED', 'FADING'
+    
+    # If entering late
+    degraded_sharpe: float        # Expected Sharpe if entering now
+    degraded_edge: float          # Remaining edge (percentage of original)
+    recommended_size_adjustment: float  # Multiply original size by this
+    
+    # Market conditions for re-entry
+    recalc_conditions: List[str]  # Conditions requiring signal recalculation
+
+
+@dataclass
+class ExitConditions:
+    """Exit conditions for the trade."""
+    take_profit_condition: str
+    take_profit_threshold: float
+    stop_loss_condition: str
+    stop_loss_threshold: float
+    time_exit_condition: str
+    time_exit_days: float
+    
+    # Dynamic exit signals
+    signal_reversal_threshold: float  # Exit if signal flips by this much
+
+
+@dataclass
+class TradeReport:
+    """
+    Comprehensive trade report for live trading.
+    
+    Combines:
+    - Carr-Wu portfolio construction (WHAT to trade)
+    - Kidger timing signals (WHEN to trade)
+    - Greeks for risk management
+    - P&L scenarios for planning
+    - Entry/exit guidance
+    """
+    # Identification
+    timestamp: str
+    trade_type: TradeType
+    underlying: str
+    expiry_days: float
+    
+    # Core decision
+    decision: TradingDecision
+    
+    # Enhanced components
+    greeks: GreeksSnapshot
+    vol_view: VolatilityView
+    scenarios: List[PnLScenario]
+    entry_timing: EntryTiming
+    exit_conditions: ExitConditions
+    
+    # Market snapshot at signal time
+    spot_price: float
+    forward_price: float
+    atm_iv: float
+    
+    def generate_report(self, width: int = 78) -> str:
+        """Generate formatted ASCII report string."""
+        return format_trade_report(self, width)
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for serialization."""
+        return {
+            'timestamp': self.timestamp,
+            'trade_type': self.trade_type.value,
+            'underlying': self.underlying,
+            'expiry_days': self.expiry_days,
+            'action': self.decision.action,
+            'position_size': self.decision.position_size,
+            'expected_sharpe': self.decision.expected_sharpe,
+            'greeks': self.greeks.to_dict(),
+            'signal_strength': self.entry_timing.signal_strength,
+            'edge': self.vol_view.edge,
+            'spot_price': self.spot_price,
+            'forward_price': self.forward_price,
+            'atm_iv': self.atm_iv
+        }
+
+
+# =============================================================================
+# GREEKS CALCULATION
+# =============================================================================
+
+def compute_portfolio_greeks(
+    portfolio: CarrWuPortfolio,
+    forward: float,
+    tau: float,
+    risk_free_rate: float = 0.0
+) -> GreeksSnapshot:
+    """
+    Compute comprehensive Greeks for a Carr-Wu portfolio.
+    
+    From Carr-Wu (2023):
+    - Cash Vega = $Γ × I²τ  (Eq. 11)
+    - Cash Vanna = $Γ × ℓ₊  (Eq. 15) 
+    - Cash Volga = $Γ × ℓ₋ℓ₊ (Eq. 13)
+    - Theta = -$Γ × I²/2  (Eq. 16)
+    """
+    total_delta = portfolio.portfolio_delta
+    total_cash_gamma = 0.0
+    total_vega = 0.0
+    total_theta = 0.0
+    total_vanna = 0.0
+    total_volga = 0.0
+    
+    for pos in portfolio.positions:
+        cash_gamma = pos.cash_gamma
+        iv = pos.implied_vol
+        l_plus = pos.moneyness_l_plus
+        
+        # Compute l_minus from l_plus and IV
+        # ℓ₋ = ℓ₊ - σ²τ (from Eq. 43)
+        l_minus = l_plus - iv**2 * tau
+        
+        # Weight by position quantity
+        qty = pos.quantity
+        
+        # Aggregate cash gamma
+        total_cash_gamma += qty * cash_gamma
+        
+        # Vega: $V = $Γ × σ²τ (Eq. 11), then vega = $V / σ
+        cash_vega_pos = cash_gamma * iv**2 * tau
+        vega_pos = cash_vega_pos / (iv + 1e-10)
+        total_vega += qty * vega_pos
+        
+        # Theta: Θ = -$Γ × I²/2 (Eq. 16)
+        # Daily theta
+        theta_pos = -cash_gamma * iv**2 / 2 / 252
+        total_theta += qty * theta_pos
+        
+        # Vanna: Cash Vanna = $Γ × ℓ₊ (Eq. 15)
+        vanna_pos = cash_gamma * l_plus
+        total_vanna += qty * vanna_pos
+        
+        # Volga: Cash Volga = $Γ × ℓ₋ℓ₊ (Eq. 13)
+        volga_pos = cash_gamma * l_minus * l_plus
+        total_volga += qty * volga_pos
+    
+    # Gamma from cash gamma: Γ = $Γ / F²
+    total_gamma = total_cash_gamma / (forward**2 + 1e-10)
+    
+    # Cash vega
+    total_cash_vega = portfolio.portfolio_cash_vega
+    
+    return GreeksSnapshot(
+        delta=total_delta,
+        gamma=total_gamma,
+        vega=total_vega,
+        theta=total_theta,
+        vanna=total_vanna,
+        volga=total_volga,
+        cash_gamma=total_cash_gamma,
+        cash_vega=total_cash_vega
+    )
+
+
+# =============================================================================
+# P&L SCENARIO CALCULATION  
+# =============================================================================
+
+def compute_pnl_scenarios(
+    greeks: GreeksSnapshot,
+    forward: float,
+    atm_iv: float,
+    tau: float,
+    position_notional: float = 10000.0
+) -> List[PnLScenario]:
+    """
+    Compute P&L under various market scenarios.
+    
+    Using the Carr-Wu P&L attribution formula:
+    dP&L ≈ Δ×dS + ½Γ×dS² + V×dσ + Θ×dt + Vanna×dS×dσ + ½Volga×dσ²
+    """
+    scenarios = []
+    
+    # Helper function to compute P&L
+    def calc_pnl(spot_pct: float, iv_change: float, days: float) -> float:
+        dS = forward * spot_pct
+        dS2 = dS**2
+        d_sigma = iv_change
+        dt = days / 252
+        
+        pnl = (
+            greeks.delta * dS +
+            0.5 * greeks.gamma * dS2 +
+            greeks.vega * d_sigma +
+            greeks.theta * days +
+            greeks.vanna * dS * d_sigma +
+            0.5 * greeks.volga * d_sigma**2
+        )
+        return pnl * position_notional / forward
+    
+    # Scenario 1: Base case (time decay only)
+    base_pnl = calc_pnl(0.0, 0.0, 1.0)
+    scenarios.append(PnLScenario(
+        name="Base case (1 day)",
+        spot_move_pct=0.0,
+        iv_move_vol=0.0,
+        time_days=1.0,
+        estimated_pnl=base_pnl,
+        pnl_pct=base_pnl / position_notional * 100,
+        explanation="Time decay + edge capture"
+    ))
+    
+    # Scenario 2: Spot up, vol down (typical leverage effect)
+    pnl_up = calc_pnl(0.01, -0.005, 1.0)
+    scenarios.append(PnLScenario(
+        name="Spot up 1%, IV -0.5vol",
+        spot_move_pct=0.01,
+        iv_move_vol=-0.005,
+        time_days=1.0,
+        estimated_pnl=pnl_up,
+        pnl_pct=pnl_up / position_notional * 100,
+        explanation="Typical risk-on move"
+    ))
+    
+    # Scenario 3: Spot down, vol up (risk-off)
+    pnl_down = calc_pnl(-0.01, 0.01, 1.0)
+    scenarios.append(PnLScenario(
+        name="Spot down 1%, IV +1vol",
+        spot_move_pct=-0.01,
+        iv_move_vol=0.01,
+        time_days=1.0,
+        estimated_pnl=pnl_down,
+        pnl_pct=pnl_down / position_notional * 100,
+        explanation="Typical risk-off move"
+    ))
+    
+    # Scenario 4: Vol spike (VIX event)
+    pnl_vol_spike = calc_pnl(0.0, 0.03, 1.0)
+    scenarios.append(PnLScenario(
+        name="Vol spike (+3vol)",
+        spot_move_pct=0.0,
+        iv_move_vol=0.03,
+        time_days=1.0,
+        estimated_pnl=pnl_vol_spike,
+        pnl_pct=pnl_vol_spike / position_notional * 100,
+        explanation="Pure vol expansion"
+    ))
+    
+    # Scenario 5: Vol crush
+    pnl_vol_crush = calc_pnl(0.0, -0.02, 1.0)
+    scenarios.append(PnLScenario(
+        name="Vol crush (-2vol)",
+        spot_move_pct=0.0,
+        iv_move_vol=-0.02,
+        time_days=1.0,
+        estimated_pnl=pnl_vol_crush,
+        pnl_pct=pnl_vol_crush / position_notional * 100,
+        explanation="Pure vol compression"
+    ))
+    
+    # Scenario 6: Gamma scalp (spot moves, vol flat)
+    pnl_gamma = calc_pnl(0.02, 0.0, 1.0) + calc_pnl(-0.02, 0.0, 0.0)
+    scenarios.append(PnLScenario(
+        name="Gamma scalp (±2% spot)",
+        spot_move_pct=0.02,
+        iv_move_vol=0.0,
+        time_days=1.0,
+        estimated_pnl=pnl_gamma / 2,  # Average of up and down
+        pnl_pct=(pnl_gamma / 2) / position_notional * 100,
+        explanation="Convexity capture"
+    ))
+    
+    return scenarios
+
+
+# =============================================================================
+# ENTRY TIMING ANALYSIS
+# =============================================================================
+
+def compute_entry_timing(
+    signal: TimingSignal,
+    step_size: int = 8,
+    snapshot_interval_minutes: float = 5.0,
+    signal_age_snapshots: int = 0
+) -> EntryTiming:
+    """
+    Compute entry timing guidance.
+    
+    Signal decay model:
+    - Log-signature computed over step_size snapshots
+    - Signal half-life ≈ step_size × snapshot_interval
+    - After 2 half-lives, signal is considered stale
+    """
+    # Signal half-life in minutes
+    half_life = step_size * snapshot_interval_minutes
+    
+    # Entry window (2 half-lives)
+    entry_window = 2 * half_life
+    
+    # Signal age
+    signal_age = signal_age_snapshots * snapshot_interval_minutes
+    
+    # Decay factor
+    decay = 0.5 ** (signal_age / half_life) if half_life > 0 else 1.0
+    
+    # Current effective strength
+    effective_strength = signal.signal_strength * decay
+    
+    # Determine optimal entry
+    if effective_strength >= 0.8:
+        optimal_entry = "NOW"
+    elif effective_strength >= 0.6:
+        optimal_entry = "FADING"
+    elif effective_strength >= 0.4:
+        optimal_entry = "WAIT"  # Wait for new signal
+    else:
+        optimal_entry = "MISSED"
+    
+    # Degraded Sharpe estimate
+    # Assume Sharpe scales with signal strength
+    base_sharpe = 1.0  # Will be overwritten
+    degraded_sharpe = base_sharpe * effective_strength
+    
+    # Recommended size adjustment
+    if effective_strength >= 0.6:
+        size_adjustment = effective_strength / signal.signal_strength
+    else:
+        size_adjustment = 0.5  # Half size if weak
+    
+    # Conditions requiring recalculation
+    recalc_conditions = [
+        f"Spot moves > {0.5}%",
+        f"IV moves > {1.0} vol",
+        "New snapshot available",
+        f"Signal age > {entry_window:.0f} minutes"
+    ]
+    
+    return EntryTiming(
+        signal_strength=effective_strength,
+        signal_age_minutes=signal_age,
+        signal_half_life_minutes=half_life,
+        entry_window_minutes=entry_window,
+        optimal_entry=optimal_entry,
+        degraded_sharpe=degraded_sharpe,
+        degraded_edge=decay,
+        recommended_size_adjustment=size_adjustment,
+        recalc_conditions=recalc_conditions
+    )
+
+
+# =============================================================================
+# VOLATILITY VIEW CONSTRUCTION
+# =============================================================================
+
+def construct_volatility_view(
+    trade_type: TradeType,
+    portfolio: CarrWuPortfolio,
+    signal: TimingSignal
+) -> VolatilityView:
+    """
+    Construct the volatility view for a trade.
+    
+    Each Carr-Wu trade isolates one volatility dimension:
+    - Vol: σ² vs I² (realized vs implied variance)
+    - Skew: γ vs b (covariance vs implied slope)
+    - Smile: ω² vs c (vol-of-vol vs implied curvature)
+    """
+    if trade_type == TradeType.VOL:
+        # Vol trade bets on σ² - I²
+        implied_param = portfolio.implied_variance
+        realized_param = signal.logsig_component  # Realized var proxy
+        edge = realized_param - implied_param
+        
+        if signal.signal_value > 0:
+            vol_posture = "LONG"
+            bet_desc = f"Realized variance ({realized_param:.4f}) > Implied ({implied_param:.4f})"
+        else:
+            vol_posture = "SHORT"
+            bet_desc = f"Realized variance ({realized_param:.4f}) < Implied ({implied_param:.4f})"
+        
+        return VolatilityView(
+            vol_posture=vol_posture,
+            skew_posture="NEUTRAL",
+            smile_posture="NEUTRAL",
+            implied_param=implied_param,
+            realized_param=realized_param,
+            edge=edge,
+            param_name="variance (σ² vs I²)",
+            bet_description=bet_desc
+        )
+    
+    elif trade_type == TradeType.SKEW:
+        # Skew trade bets on γ vs b
+        implied_param = portfolio.implied_skew
+        realized_param = signal.logsig_component  # Lévy area proxy
+        edge = realized_param - implied_param
+        
+        if signal.signal_value > 0:
+            skew_posture = "LONG"
+            bet_desc = f"Realized skew ({realized_param:.4f}) > Implied ({implied_param:.4f})"
+        else:
+            skew_posture = "SHORT"
+            bet_desc = f"Realized skew ({realized_param:.4f}) < Implied ({implied_param:.4f})"
+        
+        return VolatilityView(
+            vol_posture="NEUTRAL",
+            skew_posture=skew_posture,
+            smile_posture="NEUTRAL",
+            implied_param=implied_param,
+            realized_param=realized_param,
+            edge=edge,
+            param_name="skew (γ vs b)",
+            bet_description=bet_desc
+        )
+    
+    else:  # SMILE
+        # Smile trade bets on ω² vs c
+        implied_param = portfolio.implied_smile
+        realized_param = signal.logsig_component  # Vol-of-vol proxy
+        edge = realized_param - implied_param
+        
+        if signal.signal_value > 0:
+            smile_posture = "LONG"
+            bet_desc = f"Realized curvature ({realized_param:.4f}) > Implied ({implied_param:.4f})"
+        else:
+            smile_posture = "SHORT"
+            bet_desc = f"Realized curvature ({realized_param:.4f}) < Implied ({implied_param:.4f})"
+        
+        return VolatilityView(
+            vol_posture="NEUTRAL",
+            skew_posture="NEUTRAL",
+            smile_posture=smile_posture,
+            implied_param=implied_param,
+            realized_param=realized_param,
+            edge=edge,
+            param_name="smile (ω² vs c)",
+            bet_description=bet_desc
+        )
+
+
+# =============================================================================
+# EXIT CONDITIONS
+# =============================================================================
+
+def construct_exit_conditions(
+    trade_type: TradeType,
+    tau: float,
+    signal: TimingSignal
+) -> ExitConditions:
+    """Construct exit conditions for a trade."""
+    
+    # Take profit: signal reverses
+    if trade_type == TradeType.VOL:
+        tp_condition = "Signal reverses (realized vol drops below implied)"
+        tp_threshold = -signal.threshold
+    elif trade_type == TradeType.SKEW:
+        tp_condition = "Lévy area flips sign (price/vol order reverses)"
+        tp_threshold = -signal.threshold
+    else:
+        tp_condition = "Smile flattens (realized curvature < implied)"
+        tp_threshold = -signal.threshold
+    
+    # Stop loss: 2% of capital
+    sl_condition = "P&L < -2% of position notional"
+    sl_threshold = -0.02
+    
+    # Time exit: roll before gamma risk explodes
+    days_to_expiry = tau * 252
+    if days_to_expiry <= 5:
+        time_exit = "Exit immediately (τ < 5 days, gamma risk elevated)"
+        time_exit_days = 0.0
+    elif days_to_expiry <= 10:
+        time_exit = "Exit within 2 days or roll to next expiry"
+        time_exit_days = 2.0
+    else:
+        time_exit = f"Exit at τ = 5 days (in {days_to_expiry - 5:.0f} days)"
+        time_exit_days = days_to_expiry - 5
+    
+    return ExitConditions(
+        take_profit_condition=tp_condition,
+        take_profit_threshold=tp_threshold,
+        stop_loss_condition=sl_condition,
+        stop_loss_threshold=sl_threshold,
+        time_exit_condition=time_exit,
+        time_exit_days=time_exit_days,
+        signal_reversal_threshold=signal.threshold * 0.5
+    )
+
+
+# =============================================================================
+# REPORT FORMATTING
+# =============================================================================
+
+def format_trade_report(report: TradeReport, width: int = 78) -> str:
+    """Format a TradeReport as an ASCII box report."""
+    lines = []
+    
+    def add_header(title: str):
+        lines.append("╔" + "═" * (width - 2) + "╗")
+        lines.append("║" + title.center(width - 2) + "║")
+        lines.append("╠" + "═" * (width - 2) + "╣")
+    
+    def add_section(title: str):
+        lines.append("╠" + "═" * (width - 2) + "╣")
+        lines.append("║ " + title.ljust(width - 3) + "║")
+        lines.append("╠" + "─" * (width - 2) + "╣")
+    
+    def add_line(text: str):
+        # Truncate if too long
+        if len(text) > width - 4:
+            text = text[:width - 7] + "..."
+        lines.append("║ " + text.ljust(width - 3) + "║")
+    
+    def add_footer():
+        lines.append("╚" + "═" * (width - 2) + "╝")
+    
+    # Header
+    trade_name = f"TRADE REPORT: {report.trade_type.value.upper()} TRADE"
+    add_header(trade_name)
+    
+    # Signal Summary
+    add_line(f"Timestamp: {report.timestamp}")
+    add_line(f"Underlying: {report.underlying}  Spot: ${report.spot_price:.2f}  "
+             f"Forward: ${report.forward_price:.2f}")
+    add_line(f"Expiry: {report.expiry_days:.0f} days  ATM IV: {report.atm_iv*100:.1f}%")
+    add_line("")
+    
+    signal = report.decision.timing_signal
+    add_line(f"Signal Value: {signal.signal_value:+.4f}  "
+             f"Strength: {signal.signal_strength:.2f}  "
+             f"Confidence: {signal.confidence:.2f}")
+    add_line(f"Action: {report.decision.action}  "
+             f"Size: {report.decision.position_size:.1%}  "
+             f"E[Sharpe]: {report.decision.expected_sharpe:.2f}")
+    
+    # Position Details
+    add_section("POSITION DETAILS")
+    for pos in report.decision.portfolio.positions:
+        opt_type = pos.option_type.upper()
+        qty_sign = "+" if pos.quantity > 0 else ""
+        add_line(f"  {opt_type:8s} K=${pos.strike:<7.0f} "
+                 f"Qty={qty_sign}{pos.quantity:<8.4f} "
+                 f"IV={pos.implied_vol*100:5.1f}%  $Γ={pos.cash_gamma:,.0f}")
+    
+    # Greeks
+    add_section("GREEKS AT ENTRY")
+    g = report.greeks
+    add_line(f"  Delta: {g.delta:+.4f}    Gamma: {g.gamma:+.6f}    "
+             f"Vega: {g.vega:+.4f}")
+    add_line(f"  Theta: ${g.theta:+.2f}/day    Vanna: {g.vanna:+.6f}    "
+             f"Volga: {g.volga:+.6f}")
+    add_line(f"  Cash Gamma: ${g.cash_gamma:,.0f}    Cash Vega: ${g.cash_vega:,.2f}")
+    
+    # Volatility View
+    add_section("VOLATILITY VIEW")
+    v = report.vol_view
+    postures = []
+    if v.vol_posture != "NEUTRAL":
+        postures.append(f"VOL: {v.vol_posture}")
+    if v.skew_posture != "NEUTRAL":
+        postures.append(f"SKEW: {v.skew_posture}")
+    if v.smile_posture != "NEUTRAL":
+        postures.append(f"SMILE: {v.smile_posture}")
+    
+    add_line(f"  Posture: {', '.join(postures) if postures else 'NEUTRAL'}")
+    add_line(f"  Betting on: {v.param_name}")
+    add_line(f"  Implied: {v.implied_param:.6f}  Realized: {v.realized_param:.6f}")
+    add_line(f"  Edge: {v.edge:+.6f}")
+    add_line(f"  {v.bet_description}")
+    
+    # P&L Scenarios
+    add_section("P&L SCENARIOS (per $10,000 notional)")
+    add_line(f"  {'Scenario':<24s} {'Spot':>8s} {'IV':>8s} {'P&L':>10s} {'%':>6s}")
+    add_line("  " + "-" * 60)
+    for s in report.scenarios:
+        spot_str = f"{s.spot_move_pct*100:+.1f}%" if s.spot_move_pct != 0 else "0%"
+        iv_str = f"{s.iv_move_vol*100:+.1f}v" if s.iv_move_vol != 0 else "0v"
+        add_line(f"  {s.name:<24s} {spot_str:>8s} {iv_str:>8s} "
+                 f"${s.estimated_pnl:>+8.0f} {s.pnl_pct:>+5.2f}%")
+    
+    # Entry Timing
+    add_section("ENTRY TIMING")
+    e = report.entry_timing
+    add_line(f"  Optimal Entry: {e.optimal_entry}  "
+             f"(signal at {e.signal_strength:.0%} strength)")
+    add_line(f"  Signal Half-Life: {e.signal_half_life_minutes:.0f} minutes  "
+             f"Entry Window: {e.entry_window_minutes:.0f} minutes")
+    
+    if e.optimal_entry in ["FADING", "MISSED"]:
+        add_line(f"  ⚠ Signal degraded: Sharpe {e.degraded_sharpe:.2f}, "
+                 f"Edge {e.degraded_edge:.0%} of original")
+        add_line(f"  Recommended size adjustment: {e.recommended_size_adjustment:.0%}")
+    
+    add_line("")
+    add_line("  Recalculate signal if:")
+    for cond in e.recalc_conditions:
+        add_line(f"    • {cond}")
+    
+    # Exit Conditions
+    add_section("EXIT CONDITIONS")
+    x = report.exit_conditions
+    add_line(f"  Take Profit: {x.take_profit_condition}")
+    add_line(f"  Stop Loss: {x.stop_loss_condition}")
+    add_line(f"  Time Exit: {x.time_exit_condition}")
+    
+    add_footer()
+    
+    return "\n".join(lines)
+
+
 class CarrWuKidgerStrategy:
     """
     Combined strategy using Carr-Wu portfolios with Kidger timing.
@@ -1149,6 +1517,127 @@ class CarrWuKidgerStrategy:
             ))
         
         return decisions
+    
+    def generate_trade_reports(
+        self,
+        forward: float,
+        atm_strike: float,
+        put_strike: float,
+        call_strike: float,
+        atm_iv: float,
+        put_iv: float,
+        call_iv: float,
+        tau: float,
+        logsig: np.ndarray,
+        underlying: str = "SPY",
+        timestamp: str = None,
+        step_size: int = 8
+    ) -> List[TradeReport]:
+        """
+        Generate comprehensive trade reports for all actionable signals.
+        
+        This is the main entry point for live trading signal generation.
+        Returns full TradeReport objects with Greeks, P&L scenarios,
+        entry timing, and exit conditions.
+        
+        Args:
+            forward: Forward price
+            atm_strike: ATM strike price
+            put_strike: OTM put strike
+            call_strike: OTM call strike
+            atm_iv: ATM implied volatility
+            put_iv: OTM put implied volatility
+            call_iv: OTM call implied volatility
+            tau: Time to maturity (years)
+            logsig: Log-signature vector
+            underlying: Underlying symbol
+            timestamp: Timestamp string (defaults to current time)
+            step_size: Log-signature step size for timing calculation
+            
+        Returns:
+            List of TradeReport objects for actionable signals
+        """
+        from datetime import datetime
+        
+        if timestamp is None:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # First generate base decisions
+        decisions = self.generate_decisions(
+            forward, atm_strike, put_strike, call_strike,
+            atm_iv, put_iv, call_iv, tau, logsig
+        )
+        
+        reports = []
+        
+        for decision in decisions:
+            # Compute Greeks
+            greeks = compute_portfolio_greeks(
+                decision.portfolio,
+                forward,
+                tau
+            )
+            
+            # Construct volatility view
+            vol_view = construct_volatility_view(
+                decision.trade_type,
+                decision.portfolio,
+                decision.timing_signal
+            )
+            
+            # Compute P&L scenarios
+            scenarios = compute_pnl_scenarios(
+                greeks,
+                forward,
+                atm_iv,
+                tau
+            )
+            
+            # Compute entry timing
+            entry_timing = compute_entry_timing(
+                decision.timing_signal,
+                step_size=step_size
+            )
+            # Update degraded Sharpe with actual expected Sharpe
+            entry_timing = EntryTiming(
+                signal_strength=entry_timing.signal_strength,
+                signal_age_minutes=entry_timing.signal_age_minutes,
+                signal_half_life_minutes=entry_timing.signal_half_life_minutes,
+                entry_window_minutes=entry_timing.entry_window_minutes,
+                optimal_entry=entry_timing.optimal_entry,
+                degraded_sharpe=decision.expected_sharpe * entry_timing.degraded_edge,
+                degraded_edge=entry_timing.degraded_edge,
+                recommended_size_adjustment=entry_timing.recommended_size_adjustment,
+                recalc_conditions=entry_timing.recalc_conditions
+            )
+            
+            # Construct exit conditions
+            exit_conditions = construct_exit_conditions(
+                decision.trade_type,
+                tau,
+                decision.timing_signal
+            )
+            
+            # Build report
+            report = TradeReport(
+                timestamp=timestamp,
+                trade_type=decision.trade_type,
+                underlying=underlying,
+                expiry_days=tau * 252,
+                decision=decision,
+                greeks=greeks,
+                vol_view=vol_view,
+                scenarios=scenarios,
+                entry_timing=entry_timing,
+                exit_conditions=exit_conditions,
+                spot_price=forward,  # Approximate
+                forward_price=forward,
+                atm_iv=atm_iv
+            )
+            
+            reports.append(report)
+        
+        return reports
 
 
 # =============================================================================
@@ -1162,11 +1651,11 @@ def demonstrate_dialogue():
 
 def demonstrate_trading_framework():
     """
-    Demonstrate the combined trading framework.
+    Demonstrate the combined trading framework with comprehensive trade reports.
     """
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 78)
     print("CARR-WU + KIDGER TRADING FRAMEWORK DEMONSTRATION")
-    print("=" * 70)
+    print("=" * 78)
     
     # Market data (example)
     forward = 681.0
@@ -1217,82 +1706,54 @@ def demonstrate_trading_framework():
         min_confidence=0.5
     )
     
-    # Generate decisions
-    decisions = strategy.generate_decisions(
+    print("\n┌────────────────────────────────────────────────────────────────────────────┐")
+    print("│                           MARKET CONDITIONS                                 │")
+    print("├────────────────────────────────────────────────────────────────────────────┤")
+    print(f"│ Forward: ${forward:.2f}   ATM IV: {atm_iv*100:.1f}%   τ: {tau*252:.0f} days                          │")
+    print(f"│ Put Strike: ${put_strike:.0f} ({put_iv*100:.1f}% IV)   Call Strike: ${call_strike:.0f} ({call_iv*100:.1f}% IV)              │")
+    print("└────────────────────────────────────────────────────────────────────────────┘")
+    
+    # Generate comprehensive trade reports
+    print("\n" + "=" * 78)
+    print("COMPREHENSIVE TRADE REPORTS")
+    print("=" * 78)
+    
+    reports = strategy.generate_trade_reports(
         forward, atm_strike, put_strike, call_strike,
-        atm_iv, put_iv, call_iv, tau, logsig
+        atm_iv, put_iv, call_iv, tau, logsig,
+        underlying="SPY",
+        timestamp="2025-12-15 10:30:00"
     )
     
-    print("\n┌────────────────────────────────────────────────────────────────┐")
-    print("│                      MARKET CONDITIONS                          │")
-    print("├────────────────────────────────────────────────────────────────┤")
-    print(f"│ Forward: ${forward:.2f}   ATM IV: {atm_iv*100:.1f}%   τ: {tau*252:.0f} days      │")
-    print(f"│ Put Strike: ${put_strike:.0f} ({put_iv*100:.1f}% IV)                              │")
-    print(f"│ Call Strike: ${call_strike:.0f} ({call_iv*100:.1f}% IV)                             │")
-    print("└────────────────────────────────────────────────────────────────┘")
-    
-    # Show portfolios
-    print("\n┌────────────────────────────────────────────────────────────────┐")
-    print("│                   CARR-WU PORTFOLIOS                            │")
-    print("├────────────────────────────────────────────────────────────────┤")
-    
-    vol_port = constructor.construct_vol_trade(forward, atm_strike, atm_iv, tau)
-    skew_port = constructor.construct_skew_trade(
-        forward, atm_strike, put_strike, call_strike, atm_iv, put_iv, call_iv, tau
-    )
-    smile_port = constructor.construct_smile_trade(
-        forward, atm_strike, put_strike, call_strike, atm_iv, put_iv, call_iv, tau
-    )
-    
-    print(f"│ VOL TRADE:   I²_a = {vol_port.implied_variance:.4f} ({atm_iv*100:.1f}%²)           │")
-    print(f"│              Position: Long {vol_port.positions[0].quantity:.4f} ATM straddles    │")
-    print(f"│              Delta: {vol_port.portfolio_delta:.4f}                               │")
-    print("├────────────────────────────────────────────────────────────────┤")
-    print(f"│ SKEW TRADE:  b = {skew_port.implied_skew:.6f} (implied slope)          │")
-    print(f"│              Positions: {len(skew_port.positions)} legs (risk-reversal)           │")
-    print(f"│              Delta: {skew_port.portfolio_delta:.4f}                               │")
-    print("├────────────────────────────────────────────────────────────────┤")
-    print(f"│ SMILE TRADE: c = {smile_port.implied_smile:.6f} (implied curvature)       │")
-    print(f"│              Positions: {len(smile_port.positions)} legs (butterfly)              │")
-    print(f"│              Delta: {smile_port.portfolio_delta:.4f}                               │")
-    print("└────────────────────────────────────────────────────────────────┘")
-    
-    # Show timing signals
-    print("\n┌────────────────────────────────────────────────────────────────┐")
-    print("│                   KIDGER TIMING SIGNALS                         │")
-    print("├────────────────────────────────────────────────────────────────┤")
-    
-    signals = timing_engine.generate_all_signals(
-        logsig, vol_port, skew_port, smile_port, tau
-    )
-    
-    for trade_type, signal in signals.items():
-        print(f"│ {trade_type.value.upper():5s}: Signal = {signal.signal_value:+.4f}  "
-              f"Strength = {signal.signal_strength:.2f}  Conf = {signal.confidence:.2f} │")
-        print(f"│        {signal.interpretation:<54s} │")
-        print("├────────────────────────────────────────────────────────────────┤")
-    
-    print("└────────────────────────────────────────────────────────────────┘")
-    
-    # Show decisions
-    print("\n┌────────────────────────────────────────────────────────────────┐")
-    print("│                   TRADING DECISIONS                             │")
-    print("├────────────────────────────────────────────────────────────────┤")
-    
-    if decisions:
-        for dec in decisions:
-            print(f"│ {dec.trade_type.value.upper():5s}: {dec.action:5s}  "
-                  f"Size: {dec.position_size:.2%}  "
-                  f"E[SR]: {dec.expected_sharpe:.2f}        │")
+    if reports:
+        for report in reports:
+            print("\n" + report.generate_report())
     else:
-        print("│ No signals exceed thresholds → HOLD all positions            │")
-    
-    print("└────────────────────────────────────────────────────────────────┘")
+        print("\n  No actionable signals at this time.")
+        print("  (Signal strength or confidence below thresholds)")
+        
+        # Still show what signals exist
+        print("\n  Current signals (below threshold):")
+        vol_port = constructor.construct_vol_trade(forward, atm_strike, atm_iv, tau)
+        skew_port = constructor.construct_skew_trade(
+            forward, atm_strike, put_strike, call_strike, atm_iv, put_iv, call_iv, tau
+        )
+        smile_port = constructor.construct_smile_trade(
+            forward, atm_strike, put_strike, call_strike, atm_iv, put_iv, call_iv, tau
+        )
+        
+        signals = timing_engine.generate_all_signals(
+            logsig, vol_port, skew_port, smile_port, tau
+        )
+        
+        for trade_type, signal in signals.items():
+            print(f"    {trade_type.value.upper():5s}: Signal={signal.signal_value:+.4f}  "
+                  f"Strength={signal.signal_strength:.2f}  Conf={signal.confidence:.2f}")
     
     # Key insights
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 78)
     print("KEY INSIGHTS FROM THE CARR-WU / KIDGER SYNTHESIS")
-    print("=" * 70)
+    print("=" * 78)
     print("""
 1. SKEW TRADE has highest Sharpe (1.38) because it captures PATH-DEPENDENT
    risk premia that CAPM cannot explain. The Lévy area A^(log_S, σ) provides
@@ -1312,6 +1773,12 @@ def demonstrate_trading_framework():
 
 5. The LOG-SIGNATURE is OPTIMAL for timing these trades because option
    prices solve CDEs, and signatures capture all CDE-relevant path info.
+
+6. COMPREHENSIVE TRADE REPORTS provide:
+   - Greeks at entry (Δ, Γ, V, Θ, Vanna, Volga)
+   - P&L scenarios for risk planning
+   - Entry timing with signal decay analysis
+   - Exit conditions (take profit, stop loss, time exit)
 """)
 
 

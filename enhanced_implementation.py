@@ -1,22 +1,3 @@
-"""
-Enhanced Neural RDE Implementation - Addressing All Theoretical Components
-==========================================================================
-
-This module extends the base implementation to cover ALL components from
-Kidger's theoretical framework for short-dated options:
-
-GAPS ADDRESSED:
-1. Jump indicator channels (J^S, J^I) in augmented path
-2. Explicit signature-to-Greek mapping with interpretation
-3. Extended smile formula with Lévy area term
-4. ATM skew explosion analysis
-5. Carr-Wu baseline comparison
-6. Explicit no-arbitrage constraint formulation
-7. Depth-3 signature interpretation for forecasting
-
-Author: Extended from Kidger et al. framework
-"""
-
 from __future__ import annotations
 
 import jax

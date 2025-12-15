@@ -1,30 +1,3 @@
-"""
-The Preprocessing Problem, Solved
-==================================
-
-Patrick Kidger's Perspective on CBOE Options Data
-
-The central observation is this: option pricing IS a controlled differential equation.
-The option value evolves as:
-
-    dB = f(B) · d(t, S, I)
-
-where (t, S, I) is the control path — time, spot, implied volatility.
-
-The signature of this control path captures precisely the statistics that
-determine how the option value responds. This is not a heuristic; it is
-the content of the Taylor expansion theorem for CDEs.
-
-The preprocessing problem then reduces to a single question:
-
-    "What is the optimal way to summarize sequential data 
-     for the purpose of driving a differential equation?"
-
-The answer is the log-signature. Everything else follows.
-
-Author: Following the framework of Kidger et al.
-"""
-
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass

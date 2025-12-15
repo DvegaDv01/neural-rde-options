@@ -1,27 +1,3 @@
-"""
-Kidger's Data Preprocessing Pipeline for CBOE SPY Options
-==========================================================
-
-This module implements the complete data preprocessing pipeline that Kidger would
-design for transforming CBOE options snapshots into Neural RDE training data.
-
-The pipeline addresses the core insight:
-    "The short-dated options problem is fundamentally a LONG TIME SERIES problem.
-    A 1-week option with minute-level data has thousands of observations, and
-    the dynamics are ROUGH — dominated by jumps and rapid regime changes."
-
-Key Components:
-1. PATH CONSTRUCTION: Extract (t, log_S, σ, J^S, J^I) from snapshots
-2. LOG-SIGNATURE PREPROCESSING: Compress long paths into optimal statistics
-3. CROSS-SECTIONAL TARGETS: Extract smile parameters (γ, ω², ξ)
-4. P&L ATTRIBUTION: Compute signature-based P&L decomposition
-5. ONLINE CAPABILITY: Support streaming/real-time processing
-
-Reference: Kidger et al. "Neural Rough Differential Equations" (2021)
-
-Author: Based on Kidger's theoretical framework
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -200,20 +176,25 @@ class TrainingBatch:
 def logsig_dimension(d: int, depth: int) -> int:
     """
     Compute dimension of log-signature.
-    
+
     β(d, M) = Σ_{k=1}^{M} (1/k) Σ_{j|k} μ(k/j) d^j
-    
+
     Simplified for practical depths:
     - depth=1: d
     - depth=2: d + d(d-1)/2
-    - depth=3: d + d(d-1)/2 + d²(d-1)/3
+    - depth=3: d + d(d-1)/2 + d(d-1)
+
+    For d=5:
+    - depth=1: 5
+    - depth=2: 5 + 10 = 15
+    - depth=3: 5 + 10 + 20 = 35
     """
     if depth == 1:
         return d
     elif depth == 2:
         return d + d * (d - 1) // 2
     elif depth == 3:
-        return d + d * (d - 1) // 2 + d * d * (d - 1) // 3
+        return d + d * (d - 1) // 2 + d * (d - 1)
     else:
         # General approximation
         total = 0
@@ -245,13 +226,46 @@ def compute_signature_depth2(path: np.ndarray) -> np.ndarray:
 def compute_levy_area(path: np.ndarray) -> np.ndarray:
     """
     Compute Lévy area (antisymmetric part of depth-2 signature).
-    
+
     A^{ij} = (S^{i,j} - S^{j,i}) / 2
-    
+
     This captures the ORDER of movements — critical for jumps!
     """
     sig2 = compute_signature_depth2(path)
     return (sig2 - sig2.T) / 2.0
+
+
+def _compute_signature_depth3(path: np.ndarray) -> np.ndarray:
+    """
+    Compute depth-3 signature terms.
+
+    S^{i,j,k} = ∫∫∫_{r<s<t} dX^i_r dX^j_s dX^k_t
+
+    This matches the JAX implementation in neural_rde_options.py.
+    """
+    n_steps, d = path.shape
+    dX = np.diff(path, axis=0)
+
+    # Build cumulative sums for nested integrals
+    sig3 = np.zeros((d, d, d))
+
+    # Compute via sequential summation
+    running_sum_i = np.zeros(d)
+    running_sum_ij = np.zeros((d, d))
+
+    for t in range(len(dX)):
+        dX_t = dX[t]
+
+        # Update depth-3: sig3^{ijk} += running_sum_ij^{ij} * dX_t^k
+        sig3 += np.einsum('ij,k->ijk', running_sum_ij, dX_t)
+
+        # Update depth-2 running sum: running_sum_ij^{ij} += running_sum_i^i * dX_t^j
+        running_sum_ij += np.outer(running_sum_i, dX_t)
+
+        # Update depth-1 running sum
+        running_sum_i += dX_t
+
+    return sig3
 
 
 def compute_logsignature(path: np.ndarray, depth: int = 2) -> np.ndarray:
@@ -292,17 +306,21 @@ def compute_logsignature(path: np.ndarray, depth: int = 2) -> np.ndarray:
     if depth == 2:
         return np.concatenate([logsig1, logsig2])
     
-    # Depth 3: Higher-order terms (simplified)
+    # Depth 3: Higher-order terms using Lyndon basis
+    # Must match JAX implementation in neural_rde_options.py
     if depth >= 3:
-        sig2 = compute_signature_depth2(path)
-        sig3_terms = []
+        sig3 = _compute_signature_depth3(path)
+        logsig3_terms = []
         for i in range(d):
             for j in range(d):
                 if i < j:
-                    # Approximate depth-3 Lyndon terms
-                    term = sig2[i, i] * logsig1[j] - sig2[i, j] * logsig1[i]
-                    sig3_terms.append(term / 6.0)
-        logsig3 = np.array(sig3_terms) if sig3_terms else np.array([])
+                    # [e_i, [e_i, e_j]] type terms
+                    term = (sig3[i, i, j] + sig3[j, i, i] - 2 * sig3[i, j, i]) / 6.0
+                    logsig3_terms.append(term)
+                    # [e_j, [e_i, e_j]] type terms
+                    term = -(sig3[i, j, j] + sig3[j, j, i] - 2 * sig3[j, i, j]) / 6.0
+                    logsig3_terms.append(term)
+        logsig3 = np.array(logsig3_terms) if logsig3_terms else np.array([])
         return np.concatenate([logsig1, logsig2, logsig3])
     
     return np.concatenate([logsig1, logsig2])
@@ -380,12 +398,15 @@ class CBOEPathConstructor:
         self._cumulative_spot_jumps = 0
         self._cumulative_vol_jumps = 0
     
-    def reset_state(self):
+    def reset(self):
         """Reset state for new trading day."""
         self._prev_log_s = None
         self._prev_sigma = None
         self._cumulative_spot_jumps = 0
         self._cumulative_vol_jumps = 0
+
+    # Alias for backwards compatibility
+    reset_state = reset
     
     def extract_atm_iv(self, df: pd.DataFrame, spot: float) -> float:
         """

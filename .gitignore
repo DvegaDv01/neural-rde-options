@@ -1,0 +1,43 @@
+# Virtual environment
+/venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data files (may contain proprietary CBOE data)
+/data/
+*.csv
+*.zip
+
+# Cache directories
+.nrde_cache/
+**/s3_cache/
+
+# Model artifacts (large binary files)
+*.eqx
+*.pkl
+*.pickle
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+*credentials*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
